@@ -1,13 +1,12 @@
-# filename: main.py
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 import requests
 from bs4 import BeautifulSoup
 import json
+import subprocess
 import yt_dlp
-import os
-import uuid
+import re
 
 app = FastAPI()
 
@@ -39,32 +38,54 @@ def search_youtube(q: str = Query(...)):
                         video = item["videoRenderer"]
                         title = video["title"]["runs"][0]["text"]
                         video_id = video["videoId"]
-                        videos.append({"title": title, "videoId": video_id})
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
+                        videos.append({
+                            "title": title,
+                            "videoId": video_id,
+                            "url": video_url
+                        })
                 break
             except Exception:
                 pass
     return {"videos": videos}
 
+
+def sanitize_filename(name: str) -> str:
+    return re.sub(r'[\\/*?:"<>|]', '', name)
+
 @app.get("/download_audio")
 def download_audio(video_id: str):
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    filename = f"{uuid.uuid4()}.mp3"
-    output_path = f"./downloads/{filename}"
+    try:
+        url = f"https://www.youtube.com/watch?v={video_id}"
 
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': output_path,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'quiet': True
-    }
+        # Step 1: Extract video title using yt_dlp
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            raw_title = info.get("title", "audio")
+            title = sanitize_filename(raw_title)
 
-    os.makedirs("./downloads", exist_ok=True)
+        # Step 2: Build yt-dlp subprocess command
+        command = [
+            "yt-dlp",
+            "-f", "bestaudio[ext=m4a]/bestaudio",
+            "--extract-audio",
+            "--audio-format", "mp3",
+            "-o", "-",  # Stream to stdout
+            url
+        ]
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+        process = subprocess.Popen(command, stdout=subprocess.PIPE)
 
-    return FileResponse(output_path, filename=filename, media_type='audio/mpeg')
+        headers = {
+            "Content-Disposition": f'attachment; filename="{title}.mp3"'
+        }
+
+        return StreamingResponse(
+            process.stdout,
+            media_type="audio/mpeg",
+            headers=headers
+        )
+
+    except Exception as e:
+        print(f"Streaming failed: {e}")
+        return {"error": str(e)}
