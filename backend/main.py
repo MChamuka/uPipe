@@ -45,8 +45,7 @@ def search_youtube(q: str = Query(...)):
                             "url": video_url
                         })
                 break
-            except Exception as e:
-                print(f"Error parsing YouTube search results: {e}")
+            except Exception:
                 pass
     return {"videos": videos}
 
@@ -75,12 +74,7 @@ def download_audio(video_id: str):
             url
         ]
 
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-        # Capture any errors from stderr
-        stderr = process.stderr.read().decode()
-        if stderr:
-            return {"error": stderr}
+        process = subprocess.Popen(command, stdout=subprocess.PIPE)
 
         headers = {
             "Content-Disposition": f'attachment; filename="{title}.mp3"'
