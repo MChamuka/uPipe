@@ -22,7 +22,7 @@ Brotli
 cachetools
 chardet
 charset-normalizer
-clyent==1.2.2
+clyent==1.2.1
 colorama
 colorcet
 comm
