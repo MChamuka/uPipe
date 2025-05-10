@@ -7,6 +7,7 @@ import json
 import subprocess
 import yt_dlp
 import re
+import os
 
 app = FastAPI()
 
@@ -45,44 +46,62 @@ def search_youtube(q: str = Query(...)):
                             "url": video_url
                         })
                 break
-            except Exception:
-                pass
+            except Exception as e:
+                print("Failed to parse video results:", e)
     return {"videos": videos}
 
 
 def sanitize_filename(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', '', name)
 
+
 @app.get("/download_audio")
 def download_audio(video_id: str):
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
 
-        # Step 1: Extract video title using yt_dlp
+        # Step 1: Extract video title
         with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
             info = ydl.extract_info(url, download=False)
             raw_title = info.get("title", "audio")
             title = sanitize_filename(raw_title)
 
-        # Step 2: Build yt-dlp subprocess command
+        # Step 2: Resolve absolute path to cookies.txt
+        cookie_file = os.path.abspath("cookies.txt")
+        print(f"[DEBUG] Using cookie file at: {cookie_file}")
+        print(f"[DEBUG] Current working directory: {os.getcwd()}")
+
+        if not os.path.exists(cookie_file):
+            return {"error": f"Cookie file not found: {cookie_file}"}
+        if not os.access(cookie_file, os.R_OK):
+            return {"error": f"Cookie file not readable: {cookie_file}"}
+
+        # Step 3: Build yt-dlp command
         command = [
             "yt-dlp",
-            "--cookies", "cookies.txt",
+            "--cookies", cookie_file,
             "-f", "bestaudio[ext=m4a]/bestaudio",
             "--extract-audio",
             "--audio-format", "mp3",
-            "-o", "-",  # Stream to stdout
+            "-o", "-",  # stream to stdout
             url
         ]
 
-        process = subprocess.Popen(command, stdout=subprocess.PIPE)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        def stream_with_error_check():
+            for chunk in iter(lambda: process.stdout.read(4096), b""):
+                yield chunk
+            stderr = process.stderr.read().decode()
+            if stderr:
+                print("[yt-dlp STDERR]", stderr)
 
         headers = {
             "Content-Disposition": f'attachment; filename="{title}.mp3"'
         }
 
         return StreamingResponse(
-            process.stdout,
+            stream_with_error_check(),
             media_type="audio/mpeg",
             headers=headers
         )
@@ -90,3 +109,14 @@ def download_audio(video_id: str):
     except Exception as e:
         print(f"Streaming failed: {e}")
         return {"error": str(e)}
+
+
+@app.get("/check_cookie_file")
+def check_cookie_file():
+    cookie_path = os.path.abspath("cookies.txt")
+    return {
+        "cookie_path": cookie_path,
+        "exists": os.path.exists(cookie_path),
+        "readable": os.access(cookie_path, os.R_OK),
+        "cwd": os.getcwd()
+    }
