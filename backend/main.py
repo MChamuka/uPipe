@@ -67,6 +67,7 @@ def download_audio(video_id: str):
         # Step 2: Build yt-dlp subprocess command
         command = [
             "yt-dlp",
+            "--cookies", "cookies.txt",
             "-f", "bestaudio[ext=m4a]/bestaudio",
             "--extract-audio",
             "--audio-format", "mp3",
