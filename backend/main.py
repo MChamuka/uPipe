@@ -4,17 +4,17 @@ from fastapi.responses import StreamingResponse
 import requests
 from bs4 import BeautifulSoup
 import json
-import subprocess
-import yt_dlp
 import re
 import os
+from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError
 
 app = FastAPI()
 
 # Allow CORS for local development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -59,49 +59,56 @@ def sanitize_filename(name: str) -> str:
 def download_audio(video_id: str):
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
-
-        # Step 1: Extract video title
-        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-            info = ydl.extract_info(url, download=False)
-            raw_title = info.get("title", "audio")
-            title = sanitize_filename(raw_title)
-
-        # Step 2: Resolve absolute path to cookies.txt
         cookie_file = os.path.abspath("cookies.txt")
-        print(f"[DEBUG] Using cookie file at: {cookie_file}")
-        print(f"[DEBUG] Current working directory: {os.getcwd()}")
 
         if not os.path.exists(cookie_file):
-            return {"error": f"Cookie file not found: {cookie_file}"}
+            return {"error": f"Cookie file not found at {cookie_file}"}
         if not os.access(cookie_file, os.R_OK):
             return {"error": f"Cookie file not readable: {cookie_file}"}
 
-        # Step 3: Build yt-dlp command
-        command = [
-            "yt-dlp",
-            "--cookies", cookie_file,
-            "-f", "bestaudio[ext=m4a]/bestaudio",
-            "--extract-audio",
-            "--audio-format", "mp3",
-            "-o", "-",  # stream to stdout
-            url
-        ]
+        # Setup yt-dlp options
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio',
+            'extractaudio': True,
+            'audioformat': 'mp3',
+            'cookiefile': cookie_file,
+            'quiet': True,
+            'noplaylist': True,
+            'outtmpl': '-',
+            'logtostderr': True,
+            'verbose': True
+        }
 
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Create a streaming generator using yt-dlp
+        def generate():
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    result = ydl.extract_info(url, download=False)
+                    title = sanitize_filename(result.get("title", "audio"))
 
-        def stream_with_error_check():
-            for chunk in iter(lambda: process.stdout.read(4096), b""):
-                yield chunk
-            stderr = process.stderr.read().decode()
-            if stderr:
-                print("[yt-dlp STDERR]", stderr)
+                    # Run download and stream
+                    ydl.params["outtmpl"] = "-"
+                    ydl.download([url])
+
+            except DownloadError as de:
+                yield f"[DownloadError] {de}".encode()
+            except Exception as e:
+                yield f"[Error] {e}".encode()
+
+        # Try to extract title for filename
+        try:
+            with YoutubeDL({'quiet': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                title = sanitize_filename(info.get("title", "audio"))
+        except:
+            title = "audio"
 
         headers = {
             "Content-Disposition": f'attachment; filename="{title}.mp3"'
         }
 
         return StreamingResponse(
-            stream_with_error_check(),
+            generate(),
             media_type="audio/mpeg",
             headers=headers
         )
