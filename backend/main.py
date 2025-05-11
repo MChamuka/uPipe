@@ -1,20 +1,21 @@
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 import requests
 from bs4 import BeautifulSoup
 import json
+import subprocess
+import yt_dlp
 import re
 import os
-from yt_dlp import YoutubeDL
-from yt_dlp.utils import DownloadError
+from tempfile import NamedTemporaryFile
 
 app = FastAPI()
 
 # Allow CORS for local development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Adjust in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -66,55 +67,41 @@ def download_audio(video_id: str):
         if not os.access(cookie_file, os.R_OK):
             return {"error": f"Cookie file not readable: {cookie_file}"}
 
-        # Setup yt-dlp options
+        # Get video title
+        with yt_dlp.YoutubeDL({'quiet': True, 'cookiefile': cookie_file}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = sanitize_filename(info.get("title", "audio"))
+
+        # Create a temp file to store MP3
+        with NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+            temp_path = temp_file.name
+
+        # Download audio as mp3 to temp path
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio',
-            'extractaudio': True,
-            'audioformat': 'mp3',
             'cookiefile': cookie_file,
             'quiet': True,
             'noplaylist': True,
-            'outtmpl': '-',
-            'logtostderr': True,
-            'verbose': True
+            'outtmpl': temp_path,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
         }
 
-        # Create a streaming generator using yt-dlp
-        def generate():
-            try:
-                with YoutubeDL(ydl_opts) as ydl:
-                    result = ydl.extract_info(url, download=False)
-                    title = sanitize_filename(result.get("title", "audio"))
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
 
-                    # Run download and stream
-                    ydl.params["outtmpl"] = "-"
-                    ydl.download([url])
-
-            except DownloadError as de:
-                yield f"[DownloadError] {de}".encode()
-            except Exception as e:
-                yield f"[Error] {e}".encode()
-
-        # Try to extract title for filename
-        try:
-            with YoutubeDL({'quiet': True}) as ydl:
-                info = ydl.extract_info(url, download=False)
-                title = sanitize_filename(info.get("title", "audio"))
-        except:
-            title = "audio"
-
-        headers = {
-            "Content-Disposition": f'attachment; filename="{title}.mp3"'
-        }
-
-        return StreamingResponse(
-            generate(),
+        # Serve the MP3 file to client
+        return FileResponse(
+            path=temp_path,
             media_type="audio/mpeg",
-            headers=headers
+            filename=f"{title}.mp3",
         )
 
     except Exception as e:
-        print(f"Streaming failed: {e}")
+        print(f"Download failed: {e}")
         return {"error": str(e)}
 
 
